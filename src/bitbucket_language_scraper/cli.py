@@ -13,7 +13,8 @@ import json
 import os
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Union
+from urllib.parse import urlparse, urlunparse
 
 import requests
 from requests.adapters import HTTPAdapter
@@ -29,6 +30,8 @@ SERVER_URL = os.getenv("BB_SERVER_URL", "https://bitbucket.mycompany.com")
 SERVER_TOKEN = os.getenv("BB_SERVER_TOKEN", "your-personal-access-token")
 SERVER_USER = os.getenv("BB_SERVER_USER", "")
 SERVER_PASS = os.getenv("BB_SERVER_PASS", "")
+CA_BUNDLE = os.getenv("BB_CA_BUNDLE", "")
+INSECURE = os.getenv("BB_INSECURE", "").strip().lower() in {"1", "true", "yes", "on"}
 
 # Output
 OUTPUT_CSV = os.getenv("OUTPUT_CSV", "bitbucket_languages.csv")
@@ -42,6 +45,7 @@ def make_session(
     retries: int = 4,
     backoff_factor: float = 0.5,
     status_forcelist: Tuple[int, ...] = (429, 500, 502, 503, 504),
+    verify: Union[bool, str] = True,
 ) -> requests.Session:
     """Create a requests session with retry/backoff."""
     session = requests.Session()
@@ -56,15 +60,56 @@ def make_session(
     adapter = HTTPAdapter(max_retries=retry)
     session.mount("https://", adapter)
     session.mount("http://", adapter)
+    session.verify = verify
     return session
+
+
+def normalize_server_url(base_url: str) -> str:
+    """
+    Normalize user input to a clean Bitbucket Server/Data Center base URL.
+    Keeps context path (e.g. /bitbucket) and removes accidental UI/API suffixes.
+    """
+    raw = (base_url or "").strip()
+    if not raw:
+        raise ValueError("Server URL is empty.")
+
+    if "://" not in raw:
+        raw = f"https://{raw}"
+
+    parsed = urlparse(raw)
+    if not parsed.scheme or not parsed.netloc:
+        raise ValueError(f"Invalid server URL: {base_url!r}")
+
+    path_parts = [part for part in parsed.path.split("/") if part and part != "%20"]
+    lower_parts = [part.lower() for part in path_parts]
+
+    # If user passed .../rest/api/1.0, trim that suffix while preserving context path.
+    for index in range(max(0, len(lower_parts) - 2)):
+        if lower_parts[index : index + 3] == ["rest", "api", "1.0"]:
+            path_parts = path_parts[:index]
+            lower_parts = lower_parts[:index]
+            break
+
+    # If user passed web UI projects path, trim it.
+    if lower_parts and lower_parts[-1] == "projects":
+        path_parts = path_parts[:-1]
+
+    normalized_path = ("/" + "/".join(path_parts)) if path_parts else ""
+    return urlunparse((parsed.scheme, parsed.netloc, normalized_path.rstrip("/"), "", "", ""))
 
 
 class BitbucketCloudScraper:
     BASE = "https://api.bitbucket.org/2.0"
 
-    def __init__(self, workspace: str, username: str, app_password: str) -> None:
+    def __init__(
+        self,
+        workspace: str,
+        username: str,
+        app_password: str,
+        verify: Union[bool, str] = True,
+    ) -> None:
         self.workspace = workspace
-        self.session = make_session()
+        self.session = make_session(verify=verify)
         self.auth = (username, app_password)
 
     def _paginate(self, url: str, params: Optional[dict] = None):
@@ -244,9 +289,11 @@ class BitbucketServerScraper:
         token: Optional[str] = None,
         username: Optional[str] = None,
         password: Optional[str] = None,
+        verify: Union[bool, str] = True,
     ) -> None:
-        self.base = base_url.rstrip("/") + "/rest/api/1.0"
-        self.session = make_session()
+        normalized = normalize_server_url(base_url)
+        self.base = normalized.rstrip("/") + "/rest/api/1.0"
+        self.session = make_session(verify=verify)
         self.headers = {"Content-Type": "application/json"}
         if token:
             self.headers["Authorization"] = f"Bearer {token}"
@@ -433,6 +480,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--server-token", default=SERVER_TOKEN)
     parser.add_argument("--server-user", default=SERVER_USER)
     parser.add_argument("--server-pass", default=SERVER_PASS)
+    parser.add_argument(
+        "--ca-bundle",
+        default=CA_BUNDLE,
+        help="Path to corporate CA bundle PEM file for TLS verification.",
+    )
+    parser.add_argument(
+        "--insecure",
+        action="store_true",
+        default=INSECURE,
+        help="Disable TLS certificate verification (last resort).",
+    )
     parser.add_argument("--out-csv", default=OUTPUT_CSV)
     parser.add_argument("--out-json", default=OUTPUT_JSON)
     parser.add_argument("--no-parallel", action="store_true", help="Disable server scan concurrency")
@@ -452,26 +510,58 @@ def main(argv: Optional[List[str]] = None) -> int:
     if args.max_workers < 1:
         parser.error("--max-workers must be >= 1")
 
+    verify: Union[bool, str] = True
+    if args.insecure:
+        verify = False
+        print("! TLS verification disabled (--insecure). Use only in trusted networks.")
+    elif args.ca_bundle:
+        verify = args.ca_bundle
+        print(f"Using CA bundle: {args.ca_bundle}")
+
     if args.mode == "cloud":
         print("=== Bitbucket Cloud mode ===")
         scraper = BitbucketCloudScraper(
             workspace=args.workspace,
             username=args.bb_username,
             app_password=args.bb_app_password,
+            verify=verify,
         )
-        results = scraper.scrape()
+        try:
+            results = scraper.scrape()
+        except requests.exceptions.SSLError as exc:
+            print(f"TLS error: {exc}")
+            print("Tip: provide --ca-bundle <corp-ca.pem> or set BB_CA_BUNDLE.")
+            print("Temporary fallback: --insecure")
+            return 2
+        except requests.RequestException as exc:
+            print(f"Request failed: {exc}")
+            return 1
     else:
         print("=== Bitbucket Server / Data Center mode ===")
-        scraper = BitbucketServerScraper(
-            base_url=args.server_url,
-            token=(args.server_token or None),
-            username=(args.server_user or None),
-            password=(args.server_pass or None),
-        )
-        results = scraper.scrape(
-            parallel=not args.no_parallel,
-            max_workers=args.max_workers,
-        )
+        try:
+            scraper = BitbucketServerScraper(
+                base_url=args.server_url,
+                token=(args.server_token or None),
+                username=(args.server_user or None),
+                password=(args.server_pass or None),
+                verify=verify,
+            )
+            print(f"Server API base: {scraper.base}")
+            results = scraper.scrape(
+                parallel=not args.no_parallel,
+                max_workers=args.max_workers,
+            )
+        except ValueError as exc:
+            print(f"Invalid server URL: {exc}")
+            return 2
+        except requests.exceptions.SSLError as exc:
+            print(f"TLS error: {exc}")
+            print("Tip: use --ca-bundle <corp-ca.pem> and keep --server-url without trailing /projects.")
+            print("Temporary fallback: --insecure")
+            return 2
+        except requests.RequestException as exc:
+            print(f"Request failed: {exc}")
+            return 1
 
     save_csv(results, args.out_csv)
     save_json(results, args.out_json)
@@ -485,4 +575,3 @@ def entrypoint() -> None:
 
 if __name__ == "__main__":
     entrypoint()
-
