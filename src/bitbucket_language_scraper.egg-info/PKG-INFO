@@ -1,0 +1,102 @@
+Metadata-Version: 2.4
+Name: bitbucket-language-scraper
+Version: 0.1.0
+Summary: Bitbucket Cloud and Server/Data Center language scraper.
+Requires-Python: >=3.9
+Description-Content-Type: text/markdown
+Requires-Dist: requests>=2.31.0
+
+# Bitbucket Language Scraper
+
+Python CLI project for scraping repository languages from:
+- Bitbucket Cloud (`bitbucket.org`)
+- Bitbucket Server / Data Center
+
+## Project Structure
+
+```text
+.
+|-- pyproject.toml
+`-- src/
+    `-- bitbucket_language_scraper/
+        |-- __init__.py
+        |-- __main__.py
+        `-- cli.py
+```
+
+## Install
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -e .
+```
+
+## Run
+
+```powershell
+bitbucket-language-scraper --help
+```
+
+## Usage
+
+Cloud mode:
+
+```powershell
+bitbucket-language-scraper `
+  --mode cloud `
+  --workspace your-workspace `
+  --bb-username your-email@example.com `
+  --bb-app-password your-app-password
+```
+
+Server/Data Center mode:
+
+```powershell
+bitbucket-language-scraper `
+  --mode server `
+  --server-url https://mycompany.fr `
+  --server-token your-token `
+  --max-workers 8
+```
+
+Important:
+- If your UI is `https://mycompany.fr/projects`, pass `--server-url https://mycompany.fr`.
+- Do not pass `/projects` in `--server-url`.
+
+TLS in corporate environments:
+
+```powershell
+bitbucket-language-scraper `
+  --mode server `
+  --server-url https://mycompany.fr `
+  --server-token your-token `
+  --ca-bundle C:\path\corp-ca.pem
+```
+
+Last resort (temporary only):
+
+```powershell
+bitbucket-language-scraper --mode server --server-url https://mycompany.fr --server-token your-token --insecure
+```
+
+## Environment Variables
+
+- `BB_WORKSPACE`
+- `BB_USERNAME`
+- `BB_APP_PASSWORD`
+- `BB_SERVER_URL`
+- `BB_SERVER_TOKEN`
+- `BB_SERVER_USER`
+- `BB_SERVER_PASS`
+- `BB_CA_BUNDLE`
+- `BB_INSECURE`
+- `OUTPUT_CSV`
+- `OUTPUT_JSON`
+- `MAX_WORKERS`
+
+## Output
+
+The scraper writes:
+- `bitbucket_languages.csv`
+- `bitbucket_languages.json`

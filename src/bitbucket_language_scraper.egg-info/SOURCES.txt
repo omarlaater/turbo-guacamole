@@ -1,0 +1,11 @@
+README.md
+pyproject.toml
+src/bitbucket_language_scraper/__init__.py
+src/bitbucket_language_scraper/__main__.py
+src/bitbucket_language_scraper/cli.py
+src/bitbucket_language_scraper.egg-info/PKG-INFO
+src/bitbucket_language_scraper.egg-info/SOURCES.txt
+src/bitbucket_language_scraper.egg-info/dependency_links.txt
+src/bitbucket_language_scraper.egg-info/entry_points.txt
+src/bitbucket_language_scraper.egg-info/requires.txt
+src/bitbucket_language_scraper.egg-info/top_level.txt
